@@ -1,7 +1,7 @@
 # Browser Object Detection + Flask API
 
 # this is the feature branch 1
-# change from main
+# This is from featur 2
 
 A teaching project combining real-time computer vision in the browser with a
 Flask REST API for logging and analytics.
