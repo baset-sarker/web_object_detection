@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Browser Object Detection + API</title>
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      max-width: 900px;
+      margin: 20px auto;
+      padding: 0 20px;
+    }
+    h1 { color: #333; }
+    #container {
+      position: relative;
+      display: inline-block;
+      border: 2px solid #444;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    video, canvas {
+      display: block;
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+    #status {
+      margin-top: 10px;
+      padding: 10px;
+      background: #f0f0f0;
+      border-radius: 4px;
+    }
+    #log {
+      margin-top: 20px;
+      max-height: 300px;
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      padding: 10px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 13px;
+    }
+    button {
+      padding: 8px 16px;
+      margin-right: 8px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h1>🎥 Real-Time Object Detection</h1>
+  <p>Uses TensorFlow.js (COCO-SSD) in the browser. Detections are logged to a Flask API.</p>
+
+  <div id="container">
+    <video id="video" width="640" height="480" autoplay muted playsinline></video>
+    <canvas id="canvas" width="640" height="480"></canvas>
+  </div>
+
+  <div id="status">Loading model...</div>
+
+  <div style="margin-top: 15px;">
+    <button id="toggleLog">Pause Logging</button>
+    <button id="viewStats">View Stats</button>
+    <button id="clearLog">Clear Display</button>
+  </div>
+
+  <h3>Recent API Responses</h3>
+  <div id="log"></div>
+
+  <!-- TensorFlow.js + COCO-SSD model from CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+
+  <script>
+    const API_URL = "http://localhost:5000/api";
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const status = document.getElementById("status");
+    const logDiv = document.getElementById("log");
+
+    let loggingEnabled = true;
+    let lastLoggedLabels = {};  // throttle: don't spam the same label
+    const LOG_COOLDOWN_MS = 2000;
+
+    // Toggle logging
+    document.getElementById("toggleLog").addEventListener("click", (e) => {
+      loggingEnabled = !loggingEnabled;
+      e.target.textContent = loggingEnabled ? "Pause Logging" : "Resume Logging";
+    });
+
+    // Clear display log
+    document.getElementById("clearLog").addEventListener("click", () => {
+      logDiv.innerHTML = "";
+    });
+
+    // Fetch stats from API
+    document.getElementById("viewStats").addEventListener("click", async () => {
+      const res = await fetch(`${API_URL}/stats`);
+      const stats = await res.json();
+      logDiv.innerHTML = "<strong>📊 Detection Stats:</strong><br>" +
+        stats.map(s =>
+          `${s.label}: ${s.count} times (avg confidence: ${s.avg_confidence})`
+        ).join("<br>");
+    });
+
+    // 1. Start webcam
+    async function startCamera() {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      video.srcObject = stream;
+      return new Promise(resolve => video.onloadedmetadata = resolve);
+    }
+
+    // 2. Send detection to Flask API
+    async function logToAPI(label, confidence) {
+      const now = Date.now();
+      // Throttle: don't log same label more than once per cooldown window
+      if (lastLoggedLabels[label] && now - lastLoggedLabels[label] < LOG_COOLDOWN_MS) {
+        return;
+      }
+      lastLoggedLabels[label] = now;
+
+      try {
+        const res = await fetch(`${API_URL}/detections`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ label, confidence })
+        });
+        const data = await res.json();
+        const entry = document.createElement("div");
+        entry.textContent = `✅ Logged: ${data.label} (${(data.confidence * 100).toFixed(1)}%) at ${data.timestamp}`;
+        logDiv.prepend(entry);
+      } catch (err) {
+        console.error("API error:", err);
+      }
+    }
+
+    // 3. Draw bounding boxes
+    function drawPredictions(predictions) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      predictions.forEach(pred => {
+        const [x, y, w, h] = pred.bbox;
+        ctx.strokeStyle = "#00FF00";
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x, y, w, h);
+
+        ctx.fillStyle = "#00FF00";
+        ctx.font = "16px sans-serif";
+        const label = `${pred.class} ${(pred.score * 100).toFixed(0)}%`;
+        ctx.fillText(label, x, y > 20 ? y - 5 : y + 15);
+      });
+    }
+
+    // 4. Main detection loop
+    async function detectLoop(model) {
+      const predictions = await model.detect(video);
+      drawPredictions(predictions);
+
+      if (loggingEnabled) {
+        predictions.forEach(pred => {
+          if (pred.score > 0.6) {
+            logToAPI(pred.class, pred.score);
+          }
+        });
+      }
+
+      requestAnimationFrame(() => detectLoop(model));
+    }
+
+    // 5. Bootstrap everything
+    async function main() {
+      await startCamera();
+      status.textContent = "Loading COCO-SSD model...";
+      const model = await cocoSsd.load();
+      status.textContent = "Model loaded. Running detection...";
+      detectLoop(model);
+    }
+
+    main();
+  </script>
+</body>
+</html>
